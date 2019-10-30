@@ -93,15 +93,19 @@ def main():
                 print('Error: Out of range')
             elif indices is False:  # user entered 'q' to quit
                 sys.exit(1)
-        lim_cols = False
-        cols = []
-        if input('Limit columns in output csv to a range? (y/n)>') == 'y':
-            lim_cols = True
-            cols = get_range_from_user('Enter the range > ')
+        lim_mz_range = False
+        mz_range = []
+        if input('Limit m/z to a range? (y/n)> ') == 'y':
+            lim_mz_range = True
+            mz_range = get_range_from_user('Enter the range > ')
 
+        write_every_row = False
+        if input('Write m/z for each row? (y/n)> ') == 'y':
+            write_every_row = True
         root = []
         tolerance = 0.001  # floats +/- tolerance are considered equal
         has_set_root = False
+        first_row_written = False
         with open('{}_{}.csv'.format(name, count), 'w') as csvfile:
             writer = csv.writer(csvfile)
             if filetype == 'mzXML':
@@ -112,17 +116,44 @@ def main():
                     if retention_time >= indices[0] and retention_time <= indices[1]:
                         peaks = elem.getchildren()[0]
                         mz_array, int_array = grab_data_mzxml(peaks)
-                        if not has_set_root:
-                            root = mz_array
-                            has_set_root = True
-                        else:
-                        	pass
-                            # mz_array, int_array = align_mz_int_arrays_to_root(root, mz_array, int_array, tolerance)
-                        if lim_cols and cols is not None:
-                            mz_array = mz_array[int(cols[0]):int(cols[1])]
-                            int_array = int_array[int(cols[0]):int(cols[1])]
-                        writer.writerow(mz_array)
-                        writer.writerow(int_array)
+                        if lim_mz_range and mz_range is not None:
+                            mz_indices = find_mz_range_indices(mz_array, mz_range, tolerance)
+                            mz_array = mz_array[int(mz_indices[0]):int(mz_indices[1])]
+                            int_array = int_array[int(mz_indices[0]):int(mz_indices[1])]
+                        expected_delta_mz = find_expected_delta_mz(mz_array)
+                        print(expected_delta_mz)
+                        adj_mz_array, adj_int_array = [], []
+
+                        first_mz = mz_array[0]
+                        lower_mz_offset = round((first_mz - mz_range[0]) / expected_delta_mz)
+                        for i in range(lower_mz_offset):
+                            adj_mz_array.append(mz_range[0] + expected_delta_mz * i)
+                            adj_int_array.append(0)
+                        # for i in range(1, len(mz_array)):
+                        #    delta_mz = mz_array[i] - mz_array[i - 1]
+                        #    if abs(delta_mz - expected_delta_mz) > tolerance:
+                        #        mz_offset = round(delta_mz / expected_delta_mz)
+                        #        for j in range(mz_offset):
+                        #            adj_mz_array.append(mz_array[i] + expected_delta_mz * j)
+                        #            adj_int_array.append(0)
+                        #    adj_mz_array.append(mz_array[i])
+                        #    adj_int_array.append(int_array[i])
+                        for i in range(1, len(mz_array) - 1):
+                            adj_mz_array.append(mz_array[i])
+                            adj_int_array.append(int_array[i])
+                            if int_array[i] == 0:
+                                delta_mz_next = mz_array[i + 1] - mz_array[i]
+                                delta_mz_prev = mz_array[i] - mz_array[i - 1]
+                                if abs(delta_mz_next - delta_mz_prev) > tolerance:
+                                    mz_offset = round(delta_mz_next / delta_mz_prev)
+                                    for j in range(1, mz_offset):
+                                        adj_mz_array.append(mz_array[i] + delta_mz_prev * j)
+                                        adj_int_array.append(0)
+
+                        if not first_row_written or write_every_row:
+                            first_row_written = True
+                            writer.writerow(adj_mz_array)
+                        writer.writerow(adj_int_array)
                     elem.clear()
                     if retention_time > indices[1]:
                         break
@@ -207,6 +238,46 @@ def grab_data_mzxml(peaks):
     # need to add check for byte order
     return mz_array, int_array
 
+# find the array indices which correspond to a certain range of m/z values
+def find_mz_range_indices(mz_array, mz_range, tolerance=0.001):
+    assert mz_range[0] < mz_range[1]
+    mz_indices = []
+    found_lower = False
+    found_upper = False
+    for ind, val in zip(range(len(mz_array)), mz_array):
+        if val > mz_range[0] and not found_lower:
+            mz_indices.append(ind)
+            found_lower = True
+        if val > mz_range[1] and not found_upper:
+            mz_indices.append(ind)
+            found_upper = True
+    return mz_indices
+
+# takes the first 100 values of an m/z array and finds an "expected" delta m/z
+from math import log10
+
+def find_expected_delta_mz(mz_array, max_diff=1.25):
+    assert max_diff < 2
+
+    if len(mz_array) < 100:
+        value_range = len(mz_array)
+    else:
+        value_range = 100
+    delta_array = []
+    for i in range(1, value_range):
+        delta_array.append(mz_array[i] - mz_array[i - 1])
+
+    min_delta = min(delta_array)
+    acc = 0
+    vals = 0
+
+    for i in delta_array:
+        if i < min_delta * max_diff:
+            acc += i
+            vals += 1
+
+    avg = acc / vals
+    return avg
 
 # def grab_data_mzml(binary_data_list):
 #     mz_array, int_array = [], []
